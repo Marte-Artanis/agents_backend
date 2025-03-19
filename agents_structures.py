@@ -30,7 +30,11 @@ class AgentMemory:
         
         # Tentar carregar memória existente ou criar nova
         if os.path.exists(self.memory_file):
-            self.vector_store = FAISS.load_local(self.memory_file, self.embeddings)
+            self.vector_store = FAISS.load_local(
+                folder_path=self.memory_file, 
+                embeddings=self.embeddings,
+                allow_dangerous_deserialization=True  # Necessário pois o arquivo é criado pelo nosso próprio código
+            )
         else:
             self.vector_store = FAISS.from_texts(["Início da memória"], self.embeddings)
     

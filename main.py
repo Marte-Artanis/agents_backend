@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from backend_agents.agents_structures import groq_api_call  # Corrigindo o caminho de importação
+from agents_structures import groq_api_call, AgentMemory
 
 app = FastAPI()
 
@@ -8,17 +8,21 @@ class ChatRequest(BaseModel):
     personagem: str
     prompt: str
     periodo_historico: str
-    fatores_historicos: str  # Aceita apenas uma string
+    fatores_historicos: str
     idioma: str
 
 @app.post("/chat/")
 async def chat(request: ChatRequest):
+    # Criar/carregar memória do personagem direto do arquivo .faiss
+    memory = AgentMemory(request.personagem)
+
     resposta = groq_api_call(
         request.personagem,
         request.prompt,
         request.periodo_historico,
         request.fatores_historicos,
-        request.idioma
+        request.idioma,
+        memory=memory
     )
     return {"resposta": resposta}
 
