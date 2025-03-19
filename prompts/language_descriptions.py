@@ -1,4 +1,4 @@
-idiomas_descricao_prompts = {
+language_descriptions_prompts = {
     "Westron": (
         "A língua comum entre os povos da Terra-média. "
         "Exemplos: 'mellon' (amigo), 'loth' (flor), 'gondor' (torre), 'harad' (sul). "

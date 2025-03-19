@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from tests_agents.agente_da_terra_media_1 import groq_api_call  # Importa a função do seu arquivo
+from backend_agents.agents_structures import groq_api_call  # Corrigindo o caminho de importação
 
 app = FastAPI()
 
@@ -24,4 +24,4 @@ async def chat(request: ChatRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    uvicorn.run(app, host="0.0.0.0", port=8001) 
