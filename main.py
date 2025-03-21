@@ -1,30 +1,30 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from agents_structures import groq_api_call, AgentMemory
+from agents_structures import generate_character_response, AgentMemory
 
 app = FastAPI()
 
 class ChatRequest(BaseModel):
-    personagem: str
+    character: str
     prompt: str
-    periodo_historico: str
-    fatores_historicos: str
-    idioma: str
+    historical_period: str
+    historical_factors: str
+    language: str
 
 @app.post("/chat/")
 async def chat(request: ChatRequest):
     # Criar/carregar memória do personagem direto do arquivo .faiss
-    memory = AgentMemory(request.personagem)
+    memory = AgentMemory(request.character)
 
-    resposta = groq_api_call(
-        request.personagem,
-        request.prompt,
-        request.periodo_historico,
-        request.fatores_historicos,
-        request.idioma,
+    response = generate_character_response(
+        character=request.character,
+        user_input=request.prompt,
+        historical_period=request.historical_period,
+        historical_factor=request.historical_factors,
+        language=request.language,
         memory=memory
     )
-    return {"resposta": resposta}
+    return {"response": response}
 
 if __name__ == "__main__":
     import uvicorn

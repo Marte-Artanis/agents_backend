@@ -108,7 +108,7 @@ class AgentMemory:
         
         return memories
 
-def groq_api_call(character, user_input, historical_period, historical_factor, language, memory=None):
+def generate_character_response(character, user_input, historical_period, historical_factor, language, memory=None):
     character_description = character_descriptions_prompts.get(character, "Você é um personagem desconhecido, sem uma descrição definida.")
     language_description = language_descriptions_prompts.get(language, "Descrição do idioma não encontrada.")
 
@@ -197,7 +197,7 @@ def main():
             break
         
         # Get response with memory
-        response = groq_api_call(
+        response = generate_character_response(
             selected_character, 
             user_input, 
             selected_period, 
