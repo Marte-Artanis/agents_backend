@@ -34,7 +34,7 @@ if 'character-memories' not in pc.list_indexes().names():
 # Configure chat
 chat = ChatGroq(
     temperature=0,
-    model_name="mixtral-8x7b-32768",  
+    model_name="llama3-8b-8192",  
     groq_api_key=groq_api_key
 )
 
@@ -76,8 +76,6 @@ class AgentMemory:
         # Buscar usando apenas o input do usuário para melhor correspondência
         query_vector = self.embeddings.embed_query(current_context)
         
-        print("\n[DEBUG] Buscando memórias para:", current_context)
-        
         # Buscar memórias relevantes
         results = self.index.query(
             vector=query_vector,
@@ -86,13 +84,9 @@ class AgentMemory:
             include_metadata=True
         )
         
-        print("\n[DEBUG] Memórias encontradas no Pinecone:")
-        # Retornar todas as memórias encontradas, ordenadas por relevância
         memories = []
         for match in results.matches:
-            score = match.score
             metadata = match.metadata
-            print(f"\n[DEBUG] Metadata encontrada:", metadata)
             
             # Tentar extrair o período do contexto se não existir diretamente
             period = metadata.get('period')
@@ -110,8 +104,6 @@ class AgentMemory:
             memory_text = f"""[{period}]
             Usuário disse: {user_input}
             {self.character_name} respondeu: {response}"""
-            print(f"\n[Score: {score:.4f}]")
-            print(memory_text)
             memories.append(memory_text)
         
         return memories
@@ -121,14 +113,8 @@ def groq_api_call(character, user_input, historical_period, historical_factor, l
     language_description = language_descriptions_prompts.get(language, "Descrição do idioma não encontrada.")
 
     # Buscar memórias relevantes se existirem
-    relevant_memories = []
     if memory:
-        print(f"\n[DEBUG] Buscando memórias para o input: '{user_input}'")
-        
-        # Primeiro, buscar memórias relacionadas ao input atual
         input_memories = memory.get_relevant_memories(user_input, k=3)
-        
-        # Depois, buscar memórias relacionadas ao contexto histórico
         context_memories = memory.get_relevant_memories(f"{historical_period} {historical_factor}", k=2)
         
         # Combinar as memórias, removendo duplicatas
@@ -141,8 +127,6 @@ def groq_api_call(character, user_input, historical_period, historical_factor, l
                 seen.add(mem)
         
         memories_text = "\n".join(all_memories) if all_memories else "Sem memórias anteriores relevantes."
-        print(f"\n[DEBUG] Memórias incluídas no prompt:")
-        print(memories_text)
     else:
         memories_text = "Sem memórias anteriores."
 
@@ -221,7 +205,7 @@ def main():
             selected_language,
             memory=memory
         )
-        print(response)
+        print(f"\n{response}")
 
 if __name__ == "__main__":
     main()
