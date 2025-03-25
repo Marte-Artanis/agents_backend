@@ -11,6 +11,7 @@ from prompts.character_descriptions import character_descriptions_prompts
 from prompts.language_descriptions import language_descriptions_prompts
 from prompts.available_periods import available_periods_prompts
 from prompts.character_historical_factors import character_historical_factors_prompts
+from session_manager import SessionManager
 
 load_dotenv()
 groq_api_key = os.getenv('GROQ_API_KEY')
@@ -38,67 +39,60 @@ chat = ChatGroq(
     groq_api_key=groq_api_key
 )
 
+# Inicializar gerenciador de sessões
+session_manager = SessionManager()
+
 class AgentMemory:
-    def __init__(self, character_name: str):
+    def __init__(self, character_name: str, session_id: str, user_id: int):
         self.character_name = character_name
+        self.session_id = session_id
+        self.user_id = user_id
         self.embeddings = HuggingFaceEmbeddings(
-            model_name="BAAI/bge-large-en-v1.5"  # Modelo que gera embeddings de 1024 dimensões
+            model_name="BAAI/bge-large-en-v1.5"
         )
         self.index = pc.Index("character-memories")
     
-    def add_memory(self, user_input, response, context):
+    def add_memory(self, user_input: str, response: str, context: str):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # Criar texto para embedding que capture a semântica da interação
+        # Adicionar ao Pinecone para busca semântica e histórico
         memory_text = f"{user_input} {response}"
-        
-        # Gerar embedding do texto
         vector = self.embeddings.embed_query(memory_text)
         
-        # Adicionar à memória vetorial com metadados estruturados
         self.index.upsert(
             vectors=[{
-                'id': f"{self.character_name}_{timestamp}",
+                'id': f"{self.user_id}_{self.session_id}_{self.character_name}_{timestamp}",
                 'values': vector,
                 'metadata': {
                     'timestamp': timestamp,
                     'period': context.split(',')[0].replace('Período:', '').strip(),
                     'character': self.character_name,
+                    'session_id': self.session_id,
+                    'user_id': self.user_id,
                     'input': user_input,
                     'response': response,
                     'full_context': context
                 }
             }],
-            namespace=self.character_name
+            namespace=f"{self.user_id}_{self.character_name}"
         )
     
-    def get_relevant_memories(self, current_context, k=5):
-        # Buscar usando apenas o input do usuário para melhor correspondência
+    def get_relevant_memories(self, current_context: str, k: int = 5) -> List[str]:
+        """Busca memórias semanticamente relevantes no Pinecone"""
         query_vector = self.embeddings.embed_query(current_context)
         
-        # Buscar memórias relevantes
         results = self.index.query(
             vector=query_vector,
             top_k=k,
-            namespace=self.character_name,
+            namespace=f"{self.user_id}_{self.character_name}",
             include_metadata=True
         )
         
         memories = []
         for match in results.matches:
             metadata = match.metadata
-            
-            # Tentar extrair o período do contexto se não existir diretamente
-            period = metadata.get('period')
-            if not period and 'full_context' in metadata:
-                period = metadata['full_context'].split(',')[0].replace('Período:', '').strip()
-            elif not period and 'context' in metadata:
-                period = metadata['context'].split(',')[0].replace('Período:', '').strip()
-            else:
-                period = "Período desconhecido"
-            
-            # Pegar input/response com fallback para campos antigos
-            user_input = metadata.get('input') or metadata.get('user_input', 'Input desconhecido')
+            period = metadata.get('period', "Período desconhecido")
+            user_input = metadata.get('input', 'Input desconhecido')
             response = metadata.get('response', 'Resposta desconhecida')
             
             memory_text = f"""[{period}]
@@ -107,17 +101,37 @@ class AgentMemory:
             memories.append(memory_text)
         
         return memories
+    
+    def get_chat_history(self) -> List[Dict]:
+        """Recupera histórico completo da conversa do Pinecone"""
+        results = self.index.query(
+            vector=[0] * 1024,  # vetor dummy para pegar todos
+            top_k=100,  # ajuste conforme necessário
+            namespace=f"{self.user_id}_{self.character_name}",
+            include_metadata=True
+        )
+        
+        messages = []
+        for match in results.matches:
+            metadata = match.metadata
+            messages.extend([
+                {"role": "user", "content": metadata['input']},
+                {"role": "assistant", "content": metadata['response']}
+            ])
+        
+        # Ordenar por timestamp
+        messages.sort(key=lambda x: x.get('timestamp', ''))
+        return messages
 
-def generate_character_response(character, user_input, historical_period, historical_factor, language, memory=None):
+def generate_character_response(character: str, user_input: str, historical_period: str, historical_factor: str, language: str, memory: AgentMemory = None):
     character_description = character_descriptions_prompts.get(character, "Você é um personagem desconhecido, sem uma descrição definida.")
     language_description = language_descriptions_prompts.get(language, "Descrição do idioma não encontrada.")
 
-    # Buscar memórias relevantes se existirem
+    # Buscar memórias relevantes do Pinecone
     if memory:
         input_memories = memory.get_relevant_memories(user_input, k=3)
         context_memories = memory.get_relevant_memories(f"{historical_period} {historical_factor}", k=2)
         
-        # Combinar as memórias, removendo duplicatas
         all_memories = []
         seen = set()
         
@@ -130,33 +144,42 @@ def generate_character_response(character, user_input, historical_period, histor
     else:
         memories_text = "Sem memórias anteriores."
 
-    # Build system message
+    # Construir mensagem do sistema
     system_message_content = f"""
     Você é {character}, ou seja, {character_description}.
     
     PERGUNTA ATUAL DO USUÁRIO: "{user_input}"
-    Esta é a pergunta que você DEVE responder diretamente.
+    Esta é a pergunta que você DEVE responder.
     
     Contexto atual:
     - **Período**: {historical_period}
     - **Situação**: {historical_factor}
     - **Idioma**: {language} ({language_description})
 
-    Memórias da conversa:
+    Memórias relevantes da conversa:
     {memories_text}
 
-    Instruções importantes:
-    1. Responda DIRETAMENTE à pergunta atual do usuário
-    2. Use as memórias para dar contexto e evitar repetições
-    3. Mantenha sua personalidade, mas seja natural
-    4. Use o idioma {language} quando fizer sentido
-    5. Evite repetir frases ou metáforas que você já usou antes
-    6. Não ignore a pergunta atual para falar de outros assuntos
+    REGRAS ESSENCIAIS:
+    1. NUNCA use aspas em suas respostas - isso é MUITO importante
+    2. NUNCA diga que é uma IA ou que está interpretando um papel
+    3. NUNCA faça referências meta à conversa (como em nossa conversa anterior)
+    4. NUNCA use linguagem ou referências que seriam anacrônicas para seu personagem e período
 
-    Lembre-se: Seja direto, natural e evite repetir o que já disse antes.
+    DIRETRIZES DE PERSONALIDADE:
+    1. Responda como se você realmente fosse o personagem
+    2. Use o vocabulário e maneirismos típicos do seu personagem e período histórico
+    3. Mantenha suas emoções, opiniões e personalidade consistentes
+    4. Reaja naturalmente às interações do usuário como seu personagem reagiria
+    5. Use o idioma {language} quando fizer sentido no contexto
+    6. Suas respostas podem ser longas ou curtas, dependendo do que fizer mais sentido
+    7. Use qualquer estilo de pontuação, ênfase ou expressão que combine com sua personalidade
+
+    LEMBRE-SE:
+    1. Use as memórias anteriores para manter consistência, mas não as mencione explicitamente
+    2. Mantenha-se fiel ao seu personagem em todas as interações
+    3. Responda de forma natural e apropriada ao contexto da conversa
     """
 
-    # Configure chat template with dynamic data
     chat_template = ChatPromptTemplate.from_messages([
         SystemMessage(content=system_message_content),
         HumanMessage(content=user_input)
@@ -181,7 +204,7 @@ def main():
     selected_factor = "A busca por poder"
 
     # Inicializar memória do personagem
-    memory = AgentMemory(selected_character)
+    memory = AgentMemory(selected_character, "session1", 1)
 
     print("\nTest configuration:")
     print(f"Character: {selected_character}")
