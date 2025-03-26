@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Header, Security
+from fastapi import FastAPI, HTTPException, Depends, Header, Security, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -125,45 +125,78 @@ async def get_historical_factors(character: str, token: str = Depends(get_token_
 async def get_languages(token: str = Depends(get_token_header)):
     return language_descriptions_prompts
 
-@app.post("/chat/")
-async def chat(request: ChatRequest, token: str = Depends(get_token_header)):
-    # Obter user_id do token
-    user = auth.get_user_by_token(token)
-    if not user:
-        raise HTTPException(status_code=401, detail="Token inválido")
+@app.post("/chat")
+async def chat(request: Request, chat_request: ChatRequest):
+    # Extrair o token do header
+    auth_header = request.headers.get('Authorization')
+    if not auth_header or not auth_header.startswith('Bearer '):
+        raise HTTPException(status_code=401, detail="Token não fornecido")
+    
+    token = auth_header.split(' ')[1]
+    
+    try:
+        # Decodificar o token para pegar o user_id
+        user = auth.get_user_by_token(token)
+        if not user:
+            raise HTTPException(status_code=401, detail="Token inválido")
+        
+        user_id = user['id']
+        print("\n=== Debug Info ===")
+        print(f"Token: {token}")
+        print(f"User ID: {user_id}")
+        print(f"Character: {chat_request.character}")
+        
+        # Criar/carregar memória do personagem com o session_id e user_id
+        memory = AgentMemory(
+            character_name=chat_request.character,
+            session_id=token,  # Usando o token como session_id
+            user_id=user_id
+        )
 
-    # Verificar se tem session_id
-    if not request.session_id:
-        # Criar nova sessão com o user_id e token
-        if not session_manager.create_session(user['id'], token):
-            raise HTTPException(status_code=500, detail="Erro ao criar sessão")
-        session_id = token
-    else:
-        if not session_manager.validate_session(request.session_id):
-            raise HTTPException(status_code=400, detail="Sessão inválida ou expirada")
-        session_id = request.session_id
+        # Gerar resposta
+        context = f"Período: {chat_request.historical_period}, Fatores: {chat_request.historical_factors}"
+        print(f"Context: {context}")
+        
+        response = generate_character_response(
+            character=chat_request.character,
+            user_input=chat_request.prompt,
+            historical_period=chat_request.historical_period,
+            historical_factor=chat_request.historical_factors,
+            language=chat_request.language,
+            memory=memory
+        )
 
-    # Criar/carregar memória do personagem com o session_id e user_id
-    memory = AgentMemory(request.character, session_id, user['id'])
+        print(f"Generated Response: {response[:100]}...")
 
-    # Gerar resposta
-    response = generate_character_response(
-        character=request.character,
-        user_input=request.prompt,
-        historical_period=request.historical_period,
-        historical_factor=request.historical_factors,
-        language=request.language,
-        memory=memory
-    )
+        # Salvar a interação na memória
+        try:
+            memory.add_memory(
+                user_input=chat_request.prompt,
+                response=response,
+                context=context
+            )
+            print("Memory saved successfully!")
+        except Exception as mem_error:
+            print(f"Error saving memory: {str(mem_error)}")
+            raise HTTPException(status_code=500, detail=f"Erro ao salvar memória: {str(mem_error)}")
 
-    # Recuperar histórico atualizado
-    chat_history = memory.get_chat_history()
+        # Recuperar histórico atualizado
+        try:
+            chat_history = memory.get_chat_history()
+            print(f"Retrieved {len(chat_history)} messages from history")
+        except Exception as hist_error:
+            print(f"Error getting chat history: {str(hist_error)}")
+            chat_history = []
 
-    return {
-        "response": response,
-        "session_id": session_id,
-        "messages": chat_history
-    }
+        print("=== End Debug Info ===\n")
+        return {
+            "response": response,
+            "messages": chat_history
+        }
+        
+    except Exception as e:
+        print(f"Error in chat endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/register")
 async def register(user_data: UserRegistration):

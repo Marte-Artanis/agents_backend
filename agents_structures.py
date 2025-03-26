@@ -53,40 +53,80 @@ class AgentMemory:
         self.index = pc.Index("character-memories")
     
     def add_memory(self, user_input: str, response: str, context: str):
+        print("\n=== SALVANDO NO PINECONE ===")
+        print(f"User ID: {self.user_id}")
+        print(f"Character: {self.character_name}")
+        print(f"Session ID: {self.session_id}")
+        
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         # Adicionar ao Pinecone para busca semântica e histórico
         memory_text = f"{user_input} {response}"
         vector = self.embeddings.embed_query(memory_text)
         
-        self.index.upsert(
-            vectors=[{
-                'id': f"{self.user_id}_{self.session_id}_{self.character_name}_{timestamp}",
-                'values': vector,
-                'metadata': {
-                    'timestamp': timestamp,
-                    'period': context.split(',')[0].replace('Período:', '').strip(),
-                    'character': self.character_name,
-                    'session_id': self.session_id,
-                    'user_id': self.user_id,
-                    'input': user_input,
-                    'response': response,
-                    'full_context': context
-                }
-            }],
-            namespace=f"{self.user_id}_{self.character_name}"
-        )
+        vector_id = f"{self.user_id}_{self.session_id}_{self.character_name}_{timestamp}"
+        namespace = f"{self.user_id}_{self.character_name}"
+        
+        print(f"Vector ID: {vector_id}")
+        print(f"Namespace: {namespace}")
+        
+        metadata = {
+            'timestamp': timestamp,
+            'period': context.split(',')[0].replace('Período:', '').strip(),
+            'character': self.character_name,
+            'session_id': self.session_id,
+            'user_id': self.user_id,
+            'input': user_input,
+            'response': response,
+            'full_context': context
+        }
+        print(f"Metadata: {metadata}")
+        
+        try:
+            print("\nTentando salvar no Pinecone...")
+            self.index.upsert(
+                vectors=[{
+                    'id': vector_id,
+                    'values': vector,
+                    'metadata': metadata
+                }],
+                namespace=namespace
+            )
+            print("✅ Salvo com sucesso no Pinecone!")
+        except Exception as e:
+            print(f"❌ Erro ao salvar no Pinecone: {str(e)}")
+            raise e
+        
+        print("=== FIM DO SALVAMENTO ===\n")
     
     def get_relevant_memories(self, current_context: str, k: int = 5) -> List[str]:
-        """Busca memórias semanticamente relevantes no Pinecone"""
-        query_vector = self.embeddings.embed_query(current_context)
+        print("\n=== BUSCANDO MEMÓRIAS ===")
+        print(f"User ID: {self.user_id}")
+        print(f"Character: {self.character_name}")
+        print(f"Contexto: {current_context[:100]}...")
         
-        results = self.index.query(
-            vector=query_vector,
-            top_k=k,
-            namespace=f"{self.user_id}_{self.character_name}",
-            include_metadata=True
-        )
+        query_vector = self.embeddings.embed_query(current_context)
+        namespace = f"{self.user_id}_{self.character_name}"
+        print(f"Namespace: {namespace}")
+        
+        try:
+            results = self.index.query(
+                vector=query_vector,
+                top_k=k,
+                namespace=namespace,
+                include_metadata=True
+            )
+            print(f"✅ Encontradas {len(results.matches)} memórias")
+            for i, match in enumerate(results.matches, 1):
+                print(f"\nMemória {i}:")
+                print(f"Score: {match.score}")
+                print(f"User ID: {match.metadata.get('user_id')}")
+                print(f"Timestamp: {match.metadata.get('timestamp')}")
+        except Exception as e:
+            print(f"❌ Erro ao buscar memórias: {str(e)}")
+            return []
+        
+        print("=== FIM DA BUSCA ===\n")
         
         memories = []
         for match in results.matches:
