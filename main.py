@@ -13,6 +13,7 @@ from session_manager import SessionManager
 from datetime import datetime
 from auth import auth
 from migrate import run_migrations
+from database import db
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -69,6 +70,12 @@ class ChatRequest(BaseModel):
 class Message(BaseModel):
     role: str
     content: str
+
+class UserUpdate(BaseModel):
+    first_name: str
+    last_name: str
+    current_password: str
+    new_password: Optional[str] = None
 
 async def get_token_header(credentials: HTTPAuthorizationCredentials = Security(security)) -> str:
     # Primeiro valida o token JWT
@@ -235,7 +242,67 @@ async def logout(token: str = Depends(get_token_header)):
 @app.get("/me")
 async def get_current_user(token: str = Depends(get_token_header)):
     user = auth.get_user_by_token(token)
-    return user
+    if not user:
+        raise HTTPException(status_code=401, detail="Usuário não encontrado")
+    
+    # Buscar dados completos do usuário
+    user_data = db.fetch("""
+        SELECT id, email, first_name, last_name, birth_date 
+        FROM users 
+        WHERE id = %s
+    """, [user['id']])
+    
+    if not user_data:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    
+    return user_data[0]
+
+@app.put("/profile")
+async def update_profile(user_data: UserUpdate, token: str = Depends(get_token_header)):
+    try:
+        # Obter usuário atual
+        user = auth.get_user_by_token(token)
+        if not user:
+            raise HTTPException(status_code=401, detail="Usuário não encontrado")
+        
+        # Verificar senha atual
+        current_user = db.fetch(
+            "SELECT password_hash FROM users WHERE id = %s",
+            [user['id']]
+        )
+        
+        if not current_user or not auth.verify_password(user_data.current_password, current_user[0]['password_hash']):
+            raise HTTPException(status_code=400, detail="Senha atual incorreta")
+        
+        # Atualizar informações
+        update_query = """
+            UPDATE users 
+            SET first_name = %s, 
+                last_name = %s
+            {}
+            WHERE id = %s
+            RETURNING id, first_name, last_name, email, birth_date
+        """.format(", password_hash = %s" if user_data.new_password else "")
+        
+        params = [
+            user_data.first_name,
+            user_data.last_name
+        ]
+        
+        if user_data.new_password:
+            params.append(auth.hash_password(user_data.new_password))
+        
+        params.append(user['id'])
+        
+        updated_user = db.fetch(update_query, params)
+        
+        if not updated_user:
+            raise HTTPException(status_code=500, detail="Erro ao atualizar perfil")
+        
+        return updated_user[0]
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
