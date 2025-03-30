@@ -7,21 +7,35 @@ from psycopg2.extras import RealDictCursor
 from psycopg2.extensions import connection, cursor
 from dotenv import load_dotenv
 
+from config import DB_CONFIG
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
 load_dotenv()
 
 class DatabaseError(Exception):
     """Exceção base para erros do banco de dados"""
     pass
 
+# Configuração do SQLAlchemy
+DATABASE_URL = f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['dbname']}"
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+def get_db():
+    """Dependency para obter uma sessão do banco de dados"""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# Classe para operações com o banco
 class Database:
     def __init__(self):
-        self._conn_params = {
-            'dbname': os.getenv('DB_NAME'),
-            'user': os.getenv('DB_USER'),
-            'password': os.getenv('DB_PASSWORD'),
-            'host': os.getenv('DB_HOST'),
-            'port': os.getenv('DB_PORT')
-        }
+        self._conn_params = DB_CONFIG
         self._conn: Optional[connection] = None
 
     @property
@@ -30,6 +44,10 @@ class Database:
         if self._conn is None or self._conn.closed:
             try:
                 self._conn = psycopg2.connect(**self._conn_params)
+                # Define o schema correto após a conexão
+                with self._conn.cursor() as cur:
+                    cur.execute(f"SET search_path TO {os.getenv('DB_SCHEMA')}")
+                self._conn.commit()
             except psycopg2.Error as e:
                 raise DatabaseError(f"Erro ao conectar ao banco de dados: {e}")
         return self._conn
@@ -114,6 +132,27 @@ class Database:
 
     def __del__(self) -> None:
         self.close()
+
+    def test_connection(self):
+        """Testa a conexão e lista as tabelas do schema"""
+        with self.cursor() as cur:
+            # Mostra o schema configurado no .env
+            print(f"Schema configurado no .env: {os.getenv('DB_SCHEMA')}")
+            
+            # Lista todos os schemas
+            cur.execute("SELECT current_schema()")
+            current_schema = cur.fetchone()
+            print(f"Schema atual: {current_schema}")
+            
+            # Lista todas as tabelas do schema atual
+            cur.execute("""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = %s
+            """, [os.getenv('DB_SCHEMA')])
+            tables = cur.fetchall()
+            print(f"Tabelas encontradas: {tables}")
+            return tables
 
 # Instância global do banco de dados
 db = Database() 

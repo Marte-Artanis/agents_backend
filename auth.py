@@ -1,187 +1,180 @@
 import os
 import jwt
+from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
 import bcrypt
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
-from database import db
 from fastapi import HTTPException
+from sqlalchemy.orm import Session as DbSession
+from sqlalchemy import update
+from models import User, Session
+from database import get_db
 
 # Configurações de JWT
 JWT_SECRET = os.getenv('JWT_SECRET')
 JWT_ALGORITHM = 'HS256'
-JWT_EXPIRATION = timedelta(days=1)
+TOKEN_EXPIRATION = 24  # horas
 
-class Auth:
-    @staticmethod
-    def hash_password(password: str) -> str:
-        """Gera o hash da senha"""
-        print("Gerando hash para senha")
-        salt = bcrypt.gensalt()
-        hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
-        print(f"Hash gerado: {hashed}")
-        return hashed.decode('utf-8')
+def hash_password(password: str) -> str:
+    """Gera o hash da senha"""
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
+    return hashed.decode('utf-8')
 
-    @staticmethod
-    def verify_password(password: str, hashed_password: str) -> bool:
-        """Verifica se a senha corresponde ao hash"""
-        try:
-            return bcrypt.checkpw(
-                password.encode('utf-8'),
-                hashed_password.encode('utf-8')
-            )
-        except Exception as e:
-            print(f"Erro ao verificar senha: {e}")
-            return False
+def verify_password(password: str, hashed_password: str) -> bool:
+    """Verifica se a senha corresponde ao hash"""
+    try:
+        return bcrypt.checkpw(
+            password.encode('utf-8'),
+            hashed_password.encode('utf-8')
+        )
+    except Exception as e:
+        print(f"Erro ao verificar senha: {e}")
+        return False
 
-    @staticmethod
-    def create_token(user_id: int) -> str:
-        """Cria um token JWT"""
-        print(f"Criando token para usuário {user_id}")
-        payload = {
-            'user_id': user_id,
-            'exp': datetime.utcnow() + JWT_EXPIRATION
-        }
-        return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+def create_jwt_token(user_id: int) -> tuple[str, datetime]:
+    """Cria um novo token JWT"""
+    expires_at = datetime.utcnow() + timedelta(hours=TOKEN_EXPIRATION)
+    
+    payload = {
+        "user_id": user_id,
+        "exp": expires_at
+    }
+    
+    token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return token, expires_at
 
-    @staticmethod
-    def verify_token(token: str) -> dict:
-        """Verifica se o token é válido"""
-        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-
-    @staticmethod
-    def register_user(first_name: str, last_name: str, email: str, password: str, birth_date: datetime) -> dict:
-        print(f"Tentando registrar usuário: {email}")
-        
-        # Verifica se o email já existe
-        existing_user = db.fetch("SELECT id FROM users WHERE email = %s", [email])
-        print(f"Usuário existente? {existing_user}")
-        
-        if existing_user:
-            raise HTTPException(
-                status_code=400,
-                detail="Email já cadastrado"
-            )
-
-        # Cria o usuário
-        hashed_password = Auth.hash_password(password)
-        print(f"Hash gerado para senha: {hashed_password}")
-        
-        query = """
-            INSERT INTO users (first_name, last_name, email, password_hash, birth_date)
-            VALUES (%s, %s, %s, %s, %s)
-            RETURNING id, email
-        """
-        params = [first_name, last_name, email, hashed_password, birth_date]
-        print(f"Executando query: {query}")
-        print(f"Com parâmetros: {params}")
-        
-        result = db.fetch(query, params)
-        print(f"Resultado do insert: {result}")
-        
-        if not result:
-            raise HTTPException(
-                status_code=500,
-                detail="Erro ao criar usuário"
-            )
-            
-        user = result[0]
-        print(f"Usuário criado: {user}")
-        
-        # Gera o token
-        token = Auth.create_token(user['id'])
-        print(f"Token gerado: {token}")
-
-        # Registra a sessão
-        session_query = """
-            INSERT INTO sessions (user_id, token, expires_at)
-            VALUES (%s, %s, %s)
-        """
-        session_params = [user['id'], token, datetime.utcnow() + JWT_EXPIRATION]
-        print(f"Registrando sessão com: {session_params}")
-        
-        db.execute(session_query, session_params)
-        
-        return {
-            'id': user['id'],
-            'email': user['email'],
-            'token': token
-        }
-
-    @staticmethod
-    def login_user(email: str, password: str) -> Optional[Dict[str, Any]]:
-        """Autentica um usuário e retorna o token"""
-        print(f"Tentando login para: {email}")
-        
-        # Busca o usuário
-        query = "SELECT id, email, password_hash FROM users WHERE email = %s"
-        print(f"Executando query: {query}")
-        print(f"Com email: {email}")
-        
-        user = db.fetch(query, [email])
-        
-        if not user:
-            raise HTTPException(
-                status_code=401,
-                detail="Email ou senha incorretos"
-            )
-
-        # Verifica a senha
-        if not Auth.verify_password(password, user[0]['password_hash']):
-            raise HTTPException(
-                status_code=401,
-                detail="Email ou senha incorretos"
-            )
-
-        # Gera o token
-        token = Auth.create_token(user[0]['id'])
-        print(f"Token gerado: {token}")
-
-        # Registra a sessão
-        session_query = """
-            INSERT INTO sessions (user_id, token, expires_at)
-            VALUES (%s, %s, %s)
-        """
-        session_params = [user[0]['id'], token, datetime.utcnow() + JWT_EXPIRATION]
-        print(f"Registrando sessão com: {session_params}")
-        
-        db.execute(session_query, session_params)
-        return {
-            'user': {
-                'id': user[0]['id'],
-                'email': user[0]['email']
-            },
-            'token': token
-        }
-
-    @staticmethod
-    def logout_user(token: str) -> bool:
-        """Remove a sessão do usuário"""
-        return db.execute(
-            "UPDATE sessions SET status = 'expired' WHERE token = %s",
-            [token]
-        ) > 0
-
-    @staticmethod
-    def get_user_by_token(token: str) -> Optional[Dict[str, Any]]:
-        """Recupera o usuário pelo token"""
-        payload = Auth.verify_token(token)
-        if not payload:
-            raise HTTPException(
-                status_code=401,
-                detail="Usuário não encontrado"
-            )
-
-        user = db.fetch(
-            """
-            SELECT u.id, u.first_name, u.last_name, u.email, u.created_at
-            FROM users u
-            JOIN sessions s ON s.user_id = u.id
-            WHERE s.token = %s AND s.status = 'active' AND s.expires_at > NOW()
-            """,
-            [token]
+def register_user(
+    db: DbSession, 
+    first_name: str, 
+    last_name: str, 
+    email: str, 
+    password: str, 
+    birth_date: datetime
+) -> dict:
+    """Registra um novo usuário"""
+    
+    # Verifica se o email já existe
+    if db.query(User).filter(User.email == email).first():
+        raise HTTPException(
+            status_code=400,
+            detail="Email já cadastrado"
         )
 
-        return user[0] if user else None
+    # Cria o usuário
+    user = User(
+        first_name=first_name,
+        last_name=last_name,
+        email=email,
+        password_hash=hash_password(password),
+        birth_date=birth_date
+    )
+    
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    
+    # Gera o token e registra a sessão
+    token, expires_at = create_jwt_token(user.id)
+    register_session(db, user.id, token, expires_at)
+    
+    return {
+        'id': user.id,
+        'email': user.email,
+        'token': token
+    }
 
-# Instância global de autenticação
-auth = Auth() 
+def register_session(db: DbSession, user_id: int, token: str, expires_at: datetime) -> Session:
+    """Registra uma nova sessão"""
+    # Desativa sessões antigas do usuário
+    db.execute(
+        update(Session)
+        .where(Session.user_id == user_id)
+        .values(is_active=False)
+    )
+    
+    # Cria nova sessão
+    session = Session(
+        user_id=user_id,
+        token=token,
+        is_active=True,
+        expires_at=expires_at
+    )
+    db.add(session)
+    db.commit()
+    return session
+
+def login_user(db: DbSession, email: str, password: str) -> dict:
+    """Autentica um usuário e retorna o token"""
+    user = db.query(User).filter(User.email == email).first()
+    
+    if not user or not verify_password(password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Credenciais inválidas")
+        
+    token, expires_at = create_jwt_token(user.id)
+    register_session(db, user.id, token, expires_at)
+    
+    return {
+        "token": token,
+        "user": {
+            "id": user.id,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "email": user.email
+        }
+    }
+
+def get_user_by_token(db: DbSession, token: str) -> User:
+    """Retorna o usuário associado ao token se válido"""
+    try:
+        print("\n=== Debug Token Validation ===")
+        print(f"Token recebido: {token[:20]}...")
+        
+        # Verifica se o token é válido
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user_id = payload.get("user_id")
+        print(f"User ID extraído: {user_id}")
+        
+        # Busca a sessão
+        session = db.query(Session).filter(
+            Session.token == token,
+            Session.is_active == True
+        ).first()
+        
+        print(f"Sessão encontrada: {session is not None}")
+        
+        if not session:
+            raise HTTPException(status_code=401, detail="Sessão inválida")
+            
+        # Verifica se o token expirou
+        current_time = datetime.utcnow()
+        expires_at = session.expires_at.replace(tzinfo=None)  # Remove timezone info
+        print(f"Tempo atual: {current_time}")
+        print(f"Expira em: {expires_at}")
+        
+        if current_time > expires_at:
+            session.is_active = False
+            db.commit()
+            raise HTTPException(status_code=401, detail="Token expirado")
+            
+        # Retorna o usuário
+        user = db.query(User).filter(User.id == user_id).first()
+        print(f"Usuário encontrado: {user is not None}")
+        return user
+        
+    except ExpiredSignatureError as e:
+        print(f"Erro de token expirado: {str(e)}")
+        raise HTTPException(status_code=401, detail="Token expirado")
+    except InvalidTokenError as e:
+        print(f"Erro de token inválido: {str(e)}")
+        raise HTTPException(status_code=401, detail="Token inválido")
+    except Exception as e:
+        print(f"Erro inesperado ao validar token: {str(e)}")
+        raise HTTPException(status_code=401, detail=f"Erro ao validar token: {str(e)}")
+
+def logout_user(db: DbSession, token: str):
+    """Desativa a sessão do usuário"""
+    session = db.query(Session).filter(Session.token == token).first()
+    if session:
+        session.is_active = False
+        db.commit() 

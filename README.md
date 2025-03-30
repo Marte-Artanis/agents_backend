@@ -9,6 +9,7 @@ Backend da aplicação que permite interações com personagens do universo Tolk
 - Groq
 - Langchain
 - Pinecone
+- Alembic (Gerenciamento de Migrações)
 
 ## Configuração
 
@@ -25,12 +26,48 @@ source .venv/bin/activate  # Linux/Mac
 pip install -r requirements.txt
 ```
 
-3. Inicie o servidor:
+3. Configure as variáveis de ambiente:
+```bash
+cp .env.example .env
+# Edite o arquivo .env com suas configurações
+```
+
+4. Execute as migrações do banco de dados:
+```bash
+python run_migrations.py
+```
+
+5. Inicie o servidor:
 ```bash
 uvicorn main:app --reload --port 8001
 ```
 
 O backend estará disponível em `http://localhost:8001`
+
+## Gerenciamento de Migrações
+
+O projeto usa Alembic para gerenciar as migrações do banco de dados. Aqui estão os comandos principais:
+
+### Criar uma nova migração
+```bash
+python create_migration.py "descrição da migração"
+```
+
+### Executar migrações pendentes
+```bash
+python run_migrations.py
+```
+
+### Reverter a última migração
+```bash
+alembic downgrade -1
+```
+
+### Ver status das migrações
+```bash
+alembic current
+alembic history
+```
 
 ## Funcionalidades
 
@@ -47,8 +84,12 @@ O backend estará disponível em `http://localhost:8001`
   - `character_descriptions.py` - Descrições e personalidades
   - `character_historical_factors.py` - Fatores históricos
   - `language_descriptions.py` - Descrições e exemplos de idiomas
+- `/migrations` - Arquivos de migração do banco de dados
+  - `/versions` - Versões individuais das migrações
 - `agents_structures.py` - Estruturas principais dos agentes
 - `main.py` - Endpoints da API FastAPI
+- `database.py` - Configuração e conexão com o banco de dados
+- `alembic.ini` - Configuração do Alembic
 
 ## API Endpoints
 

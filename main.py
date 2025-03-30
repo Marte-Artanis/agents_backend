@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Header, Security, Request
+from fastapi import FastAPI, HTTPException, Depends, Header, Security, Request, Body
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -11,15 +11,21 @@ from prompts.language_descriptions import language_descriptions_prompts
 from typing import Optional, List, Dict
 from session_manager import SessionManager
 from datetime import datetime
-from auth import auth
-from migrate import run_migrations
-from database import db
+from auth import (
+    register_user,
+    login_user,
+    get_user_by_token,
+    logout_user,
+    verify_password,
+    hash_password
+)
+from database import db, get_db
+from sqlalchemy.orm import Session
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Executa as migrations quando a aplicação inicia"""
+    """Inicializa a aplicação"""
     print("Iniciando aplicação...")
-    run_migrations()
     yield
     print("Finalizando aplicação...")
 
@@ -33,18 +39,20 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://localhost:3001",
+        "http://localhost:8001",
         "http://127.0.0.1:3000",
-        "http://127.0.0.1:3001"
+        "http://127.0.0.1:3001",
+        "http://127.0.0.1:8001"
     ],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=[
         "Content-Type",
         "Authorization",
         "Accept",
         "Origin",
         "X-Requested-With"
-    ],
+    ]
 )
 
 # Modelos Pydantic
@@ -77,31 +85,52 @@ class UserUpdate(BaseModel):
     current_password: str
     new_password: Optional[str] = None
 
-async def get_token_header(credentials: HTTPAuthorizationCredentials = Security(security)) -> str:
-    # Primeiro valida o token JWT
-    user = auth.get_user_by_token(credentials.credentials)
-    if not user:
-        raise HTTPException(status_code=401, detail="Token inválido")
-    
-    # Depois valida/cria a sessão
-    if not session_manager.validate_session(credentials.credentials):
-        session_manager.create_session(user['id'], credentials.credentials)
-    
-    return credentials.credentials
+async def get_token_header(
+    credentials: HTTPAuthorizationCredentials = Security(security),
+    db: Session = Depends(get_db)
+) -> str:
+    try:
+        if not credentials:
+            raise HTTPException(status_code=401, detail="Token não fornecido")
+            
+        token = credentials.credentials
+        if not token:
+            raise HTTPException(status_code=401, detail="Token não fornecido")
+            
+        # Tenta obter o usuário com o token
+        user = get_user_by_token(db=db, token=token)
+        if not user:
+            raise HTTPException(status_code=401, detail="Token inválido")
+        
+        # Valida/cria a sessão
+        if not session_manager.validate_session(token):
+            session_manager.create_session(user.id, token)
+        
+        return token
+        
+    except Exception as e:
+        print(f"Erro em get_token_header: {str(e)}")
+        raise HTTPException(status_code=401, detail=str(e))
 
 @app.get("/new-session")
-async def create_new_session():
+async def create_new_session(token: str = Depends(get_token_header)):
     session_id = session_manager.create_session()
     return {"session_id": session_id}
 
 @app.get("/session/{session_id}")
-async def get_session(session_id: str):
+async def get_session(
+    session_id: str,
+    token: str = Depends(get_token_header)
+):
     if not session_manager.validate_session(session_id):
         raise HTTPException(status_code=404, detail="Sessão não encontrada")
     return {"status": "active"}
 
 @app.delete("/session/{session_id}")
-async def delete_session(session_id: str):
+async def delete_session(
+    session_id: str,
+    token: str = Depends(get_token_header)
+):
     if session_manager.delete_session(session_id):
         return {"status": "success"}
     raise HTTPException(status_code=404, detail="Sessão não encontrada")
@@ -133,30 +162,32 @@ async def get_languages(token: str = Depends(get_token_header)):
     return language_descriptions_prompts
 
 @app.post("/chat")
-async def chat(request: Request, chat_request: ChatRequest):
-    # Extrair o token do header
-    auth_header = request.headers.get('Authorization')
-    if not auth_header or not auth_header.startswith('Bearer '):
-        raise HTTPException(status_code=401, detail="Token não fornecido")
-    
-    token = auth_header.split(' ')[1]
-    
+async def chat(
+    chat_request: ChatRequest,
+    db: Session = Depends(get_db),
+    credentials: HTTPAuthorizationCredentials = Security(security)
+):
     try:
-        # Decodificar o token para pegar o user_id
-        user = auth.get_user_by_token(token)
-        if not user:
-            raise HTTPException(status_code=401, detail="Token inválido")
+        print("\n=== Debug Chat Request ===")
+        print(f"Token recebido: {credentials.credentials[:20]}...")
         
-        user_id = user['id']
+        # Obter usuário pelo token
+        user = get_user_by_token(db=db, token=credentials.credentials)
+        if not user:
+            raise HTTPException(status_code=401, detail="Usuário não encontrado")
+            
+        print(f"Usuário autenticado: {user.id}")
+        
+        user_id = user.id
         print("\n=== Debug Info ===")
-        print(f"Token: {token}")
+        print(f"Token: {credentials.credentials}")
         print(f"User ID: {user_id}")
         print(f"Character: {chat_request.character}")
         
-        # Criar/carregar memória do personagem com o session_id e user_id
+        # Criar/carregar memória do personagem
         memory = AgentMemory(
             character_name=chat_request.character,
-            session_id=token,  # Usando o token como session_id
+            session_id=credentials.credentials,
             user_id=user_id
         )
 
@@ -183,123 +214,103 @@ async def chat(request: Request, chat_request: ChatRequest):
                 context=context
             )
             print("Memory saved successfully!")
+            
+            # Recuperar histórico atualizado
+            chat_history = memory.get_chat_history()
+            print(f"Retrieved {len(chat_history)} messages from history")
+            
+            return {
+                "response": response,
+                "context": context,
+                "messages": chat_history
+            }
+            
         except Exception as mem_error:
             print(f"Error saving memory: {str(mem_error)}")
             raise HTTPException(status_code=500, detail=f"Erro ao salvar memória: {str(mem_error)}")
 
-        # Recuperar histórico atualizado
-        try:
-            chat_history = memory.get_chat_history()
-            print(f"Retrieved {len(chat_history)} messages from history")
-        except Exception as hist_error:
-            print(f"Error getting chat history: {str(hist_error)}")
-            chat_history = []
-
-        print("=== End Debug Info ===\n")
-        return {
-            "response": response,
-            "messages": chat_history
-        }
-        
     except Exception as e:
-        print(f"Error in chat endpoint: {str(e)}")
+        print(f"Erro no endpoint chat: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/register")
-async def register(user_data: UserRegistration):
+@app.post("/auth/register")
+async def register(
+    user_data: UserRegistration = Body(...),
+    db: Session = Depends(get_db)
+):
+    """Registra um novo usuário"""
     try:
-        print(f"Recebendo requisição de registro: {user_data}")
-        result = auth.register_user(
-            user_data.first_name,
-            user_data.last_name,
-            user_data.email,
-            user_data.password,
-            user_data.birth_date
+        return register_user(
+            db=db,
+            first_name=user_data.first_name,
+            last_name=user_data.last_name,
+            email=user_data.email,
+            password=user_data.password,
+            birth_date=user_data.birth_date
         )
-        print(f"Registro bem sucedido: {result}")
-        return {
-            "user": {
-                "id": result['id'],
-                "email": result['email']
-            },
-            "token": result['token']
-        }
     except Exception as e:
-        print(f"Erro no registro: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
 
-@app.post("/login")
-async def login(login_data: UserLogin):
-    result = auth.login_user(login_data.email, login_data.password)
-    return result  # Retorna diretamente o objeto que já está formatado corretamente
+@app.post("/auth/login")
+async def login(
+    user_data: UserLogin = Body(...),
+    db: Session = Depends(get_db)
+):
+    """Autentica um usuário"""
+    try:
+        return login_user(db, user_data.email, user_data.password)
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=str(e))
 
-@app.post("/logout")
-async def logout(token: str = Depends(get_token_header)):
-    if auth.logout_user(token):
-        return {"message": "Logout realizado com sucesso"}
-    raise HTTPException(status_code=400, detail="Erro ao realizar logout")
+@app.post("/auth/logout")
+async def logout(
+    token: str = Depends(get_token_header),
+    db: Session = Depends(get_db)
+):
+    """Desativa a sessão do usuário"""
+    return logout_user(db, token)
 
-@app.get("/me")
-async def get_current_user(token: str = Depends(get_token_header)):
-    user = auth.get_user_by_token(token)
-    if not user:
-        raise HTTPException(status_code=401, detail="Usuário não encontrado")
-    
-    # Buscar dados completos do usuário
-    user_data = db.fetch("""
-        SELECT id, email, first_name, last_name, birth_date 
-        FROM users 
-        WHERE id = %s
-    """, [user['id']])
-    
-    if not user_data:
-        raise HTTPException(status_code=404, detail="Usuário não encontrado")
-    
-    return user_data[0]
+@app.get("/auth/me")
+async def get_current_user(
+    token: str = Depends(get_token_header),
+    db: Session = Depends(get_db)
+):
+    """Retorna o usuário atual"""
+    return get_user_by_token(db, token)
 
 @app.put("/profile")
-async def update_profile(user_data: UserUpdate, token: str = Depends(get_token_header)):
+async def update_profile(
+    user_data: UserUpdate,
+    db: Session = Depends(get_db),
+    token: str = Depends(get_token_header)  # Adicionando autenticação obrigatória
+):
     try:
         # Obter usuário atual
-        user = auth.get_user_by_token(token)
+        user = get_user_by_token(db=db, token=token)
         if not user:
             raise HTTPException(status_code=401, detail="Usuário não encontrado")
         
         # Verificar senha atual
-        current_user = db.fetch(
-            "SELECT password_hash FROM users WHERE id = %s",
-            [user['id']]
-        )
-        
-        if not current_user or not auth.verify_password(user_data.current_password, current_user[0]['password_hash']):
+        if not verify_password(user_data.current_password, user.password_hash):
             raise HTTPException(status_code=400, detail="Senha atual incorreta")
         
         # Atualizar informações
-        update_query = """
-            UPDATE users 
-            SET first_name = %s, 
-                last_name = %s
-            {}
-            WHERE id = %s
-            RETURNING id, first_name, last_name, email, birth_date
-        """.format(", password_hash = %s" if user_data.new_password else "")
-        
-        params = [
-            user_data.first_name,
-            user_data.last_name
-        ]
+        user.first_name = user_data.first_name
+        user.last_name = user_data.last_name
         
         if user_data.new_password:
-            params.append(auth.hash_password(user_data.new_password))
+            user.password_hash = hash_password(user_data.new_password)
         
-        params.append(user['id'])
+        db.commit()
+        db.refresh(user)
         
-        updated_user = db.fetch(update_query, params)
-        
-        if not updated_user:
-            raise HTTPException(status_code=500, detail="Erro ao atualizar perfil")
-        
-        return updated_user[0]
+        return {
+            "id": user.id,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "email": user.email,
+            "birth_date": user.birth_date
+        }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
