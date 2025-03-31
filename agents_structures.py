@@ -163,78 +163,111 @@ class AgentMemory:
         messages.sort(key=lambda x: x.get('timestamp', ''))
         return messages
 
-def generate_character_response(character: str, user_input: str, historical_period: str, historical_factor: str, language: str, memory: AgentMemory = None):
-    character_description = character_descriptions_prompts.get(character, "Você é um personagem desconhecido, sem uma descrição definida.")
-    language_description = language_descriptions_prompts.get(language, "Descrição do idioma não encontrada.")
+def generate_character_response(
+    character: str,
+    prompt: str,
+    historical_period: str,
+    historical_factor: str,
+    language: str,
+    memory: AgentMemory = None
+) -> str:
+    """Gera uma resposta do personagem baseada no prompt e contexto"""
+    try:
+        # Obter descrições e prompts
+        character_desc = character_descriptions_prompts.get(character, "")
+        period_desc = available_periods_prompts.get(historical_period, "")
+        factor_desc = character_historical_factors_prompts.get(historical_factor, "")
+        language_desc = language_descriptions_prompts.get(language, "")
 
-    # Buscar memórias relevantes do Pinecone
-    if memory:
-        input_memories = memory.get_relevant_memories(user_input, k=3)
-        context_memories = memory.get_relevant_memories(f"{historical_period} {historical_factor}", k=2)
+        # Construir contexto histórico
+        context = f"Período: {historical_period}, Fator Histórico: {historical_factor}"
         
-        all_memories = []
-        seen = set()
+        # Recuperar histórico relevante
+        memory_context = ""
+        if memory:
+            try:
+                # Buscar memórias semanticamente relevantes para o prompt atual
+                prompt_memories = memory.get_relevant_memories(prompt, k=3)
+                
+                # Buscar memórias semanticamente relevantes para o contexto
+                context_memories = memory.get_relevant_memories(context, k=2)
+                
+                # Combinar e remover duplicatas (verificando conteúdo, não apenas referência)
+                deduplicated_memories = []
+                content_hashes = set()
+                
+                for mem in prompt_memories + context_memories:
+                    # Criar um hash simplificado do conteúdo para identificar similaridade
+                    content_parts = mem.lower().split("usuário disse:")
+                    if len(content_parts) > 1:
+                        response_part = content_parts[1].split(f"{character} respondeu:")[1] if len(content_parts[1].split(f"{character} respondeu:")) > 1 else ""
+                        content_hash = response_part.strip()[:50]  # primeiros 50 caracteres da resposta
+                        
+                        # Se esse conteúdo ou algo muito similar já foi incluído, pule
+                        if content_hash not in content_hashes:
+                            content_hashes.add(content_hash)
+                            deduplicated_memories.append(mem)
+                
+                # Limitar a 3 memórias no máximo para não sobrecarregar
+                final_memories = deduplicated_memories[:3]
+                
+                # Formatar as memórias para o contexto
+                if final_memories:
+                    memory_context = "Histórico relevante da conversa (apenas como referência):\n" + "\n---\n".join(final_memories)
+            except Exception as mem_error:
+                print(f"Erro ao recuperar memórias: {str(mem_error)}")
+                memory_context = "Sem histórico de conversa disponível."
+
+        # Criar prompt do sistema com equilíbrio entre contexto e foco na mensagem atual
+        system_prompt = f"""Você é {character}.
+
+        Contexto do personagem:
+        {character_desc}
+
+        Período histórico:
+        {period_desc}
+
+        Fatores históricos:
+        {factor_desc}
+
+        Idioma e estilo:
+        {language_desc}
+
+        {memory_context}
+
+        INSTRUÇÕES IMPORTANTES PARA RESPONDER:
+        1. Mantenha-se fiel ao personagem e período histórico
+        2. Use o idioma e estilo especificados
+        3. NUNCA repita exatamente a mesma resposta que você já deu antes
+        4. RESPONDA à mensagem atual do usuário: "{prompt}"
+        5. Use o histórico apenas como contexto secundário
+        6. Priorize a resposta à mensagem atual, não ao histórico
+        7. Varie suas respostas, mesmo para perguntas similares
+        8. Quando o usuário fizer perguntas simples ou saudações, dê respostas diretas mas VARIADAS
+        9. Mantenha suas respostas relevantes para o que o usuário acabou de perguntar
+        10. É PROIBIDO repetir o mesmo padrão de resposta de interações anteriores
+        11. Seja criativo e original em cada resposta
+        12. NUNCA use aspas em suas respostas - isso é MUITO importante
+        """
+
+        # Criar a cadeia de mensagens
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=prompt)
+        ]
+
+        # Gerar resposta
+        response = chat(messages)
         
-        for mem in input_memories + context_memories:
-            if mem not in seen:
-                all_memories.append(mem)
-                seen.add(mem)
+        # Armazenar na memória se existir
+        if memory:
+            memory.add_memory(prompt, response.content, context)
         
-        memories_text = "\n".join(all_memories) if all_memories else "Sem memórias anteriores relevantes."
-    else:
-        memories_text = "Sem memórias anteriores."
+        return response.content
 
-    # Construir mensagem do sistema
-    system_message_content = f"""
-    Você é {character}, ou seja, {character_description}.
-    
-    PERGUNTA ATUAL DO USUÁRIO: "{user_input}"
-    Esta é a pergunta que você DEVE responder.
-    
-    Contexto atual:
-    - **Período**: {historical_period}
-    - **Situação**: {historical_factor}
-    - **Idioma**: {language} ({language_description})
-
-    Memórias relevantes da conversa:
-    {memories_text}
-
-    REGRAS ESSENCIAIS:
-    1. NUNCA use aspas em suas respostas - isso é MUITO importante
-    2. NUNCA diga que é uma IA ou que está interpretando um papel
-    3. NUNCA faça referências meta à conversa (como em nossa conversa anterior)
-    4. NUNCA use linguagem ou referências que seriam anacrônicas para seu personagem e período
-
-    DIRETRIZES DE PERSONALIDADE:
-    1. Responda como se você realmente fosse o personagem
-    2. Use o vocabulário e maneirismos típicos do seu personagem e período histórico
-    3. Mantenha suas emoções, opiniões e personalidade consistentes
-    4. Reaja naturalmente às interações do usuário como seu personagem reagiria
-    5. Use o idioma {language} quando fizer sentido no contexto
-    6. Suas respostas podem ser longas ou curtas, dependendo do que fizer mais sentido
-    7. Use qualquer estilo de pontuação, ênfase ou expressão que combine com sua personalidade
-
-    LEMBRE-SE:
-    1. Use as memórias anteriores para manter consistência, mas não as mencione explicitamente
-    2. Mantenha-se fiel ao seu personagem em todas as interações
-    3. Responda de forma natural e apropriada ao contexto da conversa
-    """
-
-    chat_template = ChatPromptTemplate.from_messages([
-        SystemMessage(content=system_message_content),
-        HumanMessage(content=user_input)
-    ])
-
-    formatted_prompt = chat_template.format_messages()
-    model_response = chat.invoke(formatted_prompt)
-    response = model_response.content.strip()
-
-    # Armazenar na memória se existir
-    if memory:
-        context = f"Período: {historical_period}, Fator: {historical_factor}"
-        memory.add_memory(user_input, response, context)
-
-    return response
+    except Exception as e:
+        print(f"Erro ao recuperar memórias: {str(e)}")
+        raise Exception(f"Erro ao gerar resposta: {str(e)}")
 
 def main():
     # Fixed test configuration

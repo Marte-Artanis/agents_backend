@@ -183,6 +183,7 @@ async def chat(
         print(f"Token: {credentials.credentials}")
         print(f"User ID: {user_id}")
         print(f"Character: {chat_request.character}")
+        print(f"Prompt: {chat_request.prompt}")
         
         # Criar/carregar memória do personagem
         memory = AgentMemory(
@@ -192,45 +193,19 @@ async def chat(
         )
 
         # Gerar resposta
-        context = f"Período: {chat_request.historical_period}, Fatores: {chat_request.historical_factors}"
-        print(f"Context: {context}")
-        
         response = generate_character_response(
             character=chat_request.character,
-            user_input=chat_request.prompt,
+            prompt=chat_request.prompt,
             historical_period=chat_request.historical_period,
             historical_factor=chat_request.historical_factors,
             language=chat_request.language,
             memory=memory
         )
 
-        print(f"Generated Response: {response[:100]}...")
-
-        # Salvar a interação na memória
-        try:
-            memory.add_memory(
-                user_input=chat_request.prompt,
-                response=response,
-                context=context
-            )
-            print("Memory saved successfully!")
-            
-            # Recuperar histórico atualizado
-            chat_history = memory.get_chat_history()
-            print(f"Retrieved {len(chat_history)} messages from history")
-            
-            return {
-                "response": response,
-                "context": context,
-                "messages": chat_history
-            }
-            
-        except Exception as mem_error:
-            print(f"Error saving memory: {str(mem_error)}")
-            raise HTTPException(status_code=500, detail=f"Erro ao salvar memória: {str(mem_error)}")
+        return {"response": response}
 
     except Exception as e:
-        print(f"Erro no endpoint chat: {str(e)}")
+        print(f"Erro no chat: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/auth/register")
@@ -275,45 +250,38 @@ async def get_current_user(
     token: str = Depends(get_token_header),
     db: Session = Depends(get_db)
 ):
-    """Retorna o usuário atual"""
-    return get_user_by_token(db, token)
+    """Retorna os dados do usuário atual"""
+    user = get_user_by_token(db=db, token=token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Usuário não encontrado")
+    return user
 
-@app.put("/profile")
-async def update_profile(
+@app.put("/auth/me")
+async def update_user(
     user_data: UserUpdate,
-    db: Session = Depends(get_db),
-    token: str = Depends(get_token_header)  # Adicionando autenticação obrigatória
+    token: str = Depends(get_token_header),
+    db: Session = Depends(get_db)
 ):
-    try:
-        # Obter usuário atual
-        user = get_user_by_token(db=db, token=token)
-        if not user:
-            raise HTTPException(status_code=401, detail="Usuário não encontrado")
-        
-        # Verificar senha atual
-        if not verify_password(user_data.current_password, user.password_hash):
-            raise HTTPException(status_code=400, detail="Senha atual incorreta")
-        
-        # Atualizar informações
-        user.first_name = user_data.first_name
-        user.last_name = user_data.last_name
-        
-        if user_data.new_password:
-            user.password_hash = hash_password(user_data.new_password)
-        
-        db.commit()
-        db.refresh(user)
-        
-        return {
-            "id": user.id,
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-            "email": user.email,
-            "birth_date": user.birth_date
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """Atualiza os dados do usuário"""
+    user = get_user_by_token(db=db, token=token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Usuário não encontrado")
+    
+    # Verifica a senha atual
+    if not verify_password(user_data.current_password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Senha atual incorreta")
+    
+    # Atualiza os dados
+    user.first_name = user_data.first_name
+    user.last_name = user_data.last_name
+    
+    # Se uma nova senha foi fornecida, atualiza
+    if user_data.new_password:
+        user.password_hash = hash_password(user_data.new_password)
+    
+    db.commit()
+    db.refresh(user)
+    return user
 
 if __name__ == "__main__":
     import uvicorn
