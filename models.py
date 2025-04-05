@@ -23,7 +23,6 @@ class User(Base):
 
     # Relacionamentos
     sessions = relationship("Session", back_populates="user", cascade="all, delete-orphan")
-    chat_history = relationship("ChatHistory", back_populates="user", cascade="all, delete-orphan")
 
     # Índices
     __table_args__ = (
@@ -47,27 +46,4 @@ class Session(Base):
     __table_args__ = (
         Index('idx_sessions_token', 'token'),
         Index('idx_sessions_user_id', 'user_id'),
-    )
-
-class ChatHistory(Base):
-    __tablename__ = 'chat_history'
-    
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
-    session_id = Column(String(255), nullable=False)
-    character_name = Column(String(255), nullable=False)
-    user_input = Column(Text, nullable=False)
-    response = Column(Text, nullable=False)
-    context = Column(Text, nullable=False)
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-
-    # Relacionamentos
-    user = relationship("User", back_populates="chat_history")
-
-    # Índices
-    __table_args__ = (
-        Index('idx_chat_history_user_id', 'user_id'),
-        Index('idx_chat_history_session_id', 'session_id'),
-        Index('idx_chat_history_character', 'character_name'),
-        Index('idx_chat_history_created_at', 'created_at'),
     ) 

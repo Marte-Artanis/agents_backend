@@ -43,9 +43,9 @@ chat = ChatGroq(
 session_manager = SessionManager()
 
 class AgentMemory:
-    def __init__(self, character_name: str, session_id: str, user_id: int):
+    def __init__(self, character_name: str, chat_id: str, user_id: int):
         self.character_name = character_name
-        self.session_id = session_id
+        self.chat_id = chat_id
         self.user_id = user_id
         self.embeddings = HuggingFaceEmbeddings(
             model_name="BAAI/bge-large-en-v1.5"
@@ -56,7 +56,7 @@ class AgentMemory:
         print("\n=== SALVANDO NO PINECONE ===")
         print(f"User ID: {self.user_id}")
         print(f"Character: {self.character_name}")
-        print(f"Session ID: {self.session_id}")
+        print(f"Chat ID: {self.chat_id}")
         
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
@@ -64,26 +64,24 @@ class AgentMemory:
         memory_text = f"{user_input} {response}"
         vector = self.embeddings.embed_query(memory_text)
         
-        vector_id = f"{self.user_id}_{self.session_id}_{self.character_name}_{timestamp}"
-        namespace = f"{self.user_id}_{self.character_name}"
+        vector_id = f"{self.user_id}_{self.chat_id}_{timestamp}"
+        namespace = f"{self.user_id}"
         
         print(f"Vector ID: {vector_id}")
         print(f"Namespace: {namespace}")
         
         metadata = {
             'timestamp': timestamp,
-            'period': context.split(',')[0].replace('Período:', '').strip(),
+            'role': 'user',
+            'content': user_input,
             'character': self.character_name,
-            'session_id': self.session_id,
+            'chat_id': self.chat_id,
             'user_id': self.user_id,
-            'input': user_input,
-            'response': response,
-            'full_context': context
+            'context': context
         }
-        print(f"Metadata: {metadata}")
         
         try:
-            print("\nTentando salvar no Pinecone...")
+            print("\nSalvando input do usuário no Pinecone...")
             self.index.upsert(
                 vectors=[{
                     'id': vector_id,
@@ -92,6 +90,28 @@ class AgentMemory:
                 }],
                 namespace=namespace
             )
+            
+            # Adicionar resposta do assistente
+            vector_id_response = f"{self.user_id}_{self.chat_id}_{timestamp}_response"
+            metadata_response = {
+                'timestamp': timestamp,
+                'role': 'assistant',
+                'content': response,
+                'character': self.character_name,
+                'chat_id': self.chat_id,
+                'user_id': self.user_id,
+                'context': context
+            }
+            
+            self.index.upsert(
+                vectors=[{
+                    'id': vector_id_response,
+                    'values': vector,
+                    'metadata': metadata_response
+                }],
+                namespace=namespace
+            )
+            
             print("✅ Salvo com sucesso no Pinecone!")
         except Exception as e:
             print(f"❌ Erro ao salvar no Pinecone: {str(e)}")
@@ -106,22 +126,19 @@ class AgentMemory:
         print(f"Contexto: {current_context[:100]}...")
         
         query_vector = self.embeddings.embed_query(current_context)
-        namespace = f"{self.user_id}_{self.character_name}"
-        print(f"Namespace: {namespace}")
+        namespace = f"{self.user_id}"
         
         try:
             results = self.index.query(
                 vector=query_vector,
                 top_k=k,
                 namespace=namespace,
+                filter={
+                    "chat_id": {"$eq": self.chat_id}
+                },
                 include_metadata=True
             )
             print(f"✅ Encontradas {len(results.matches)} memórias")
-            for i, match in enumerate(results.matches, 1):
-                print(f"\nMemória {i}:")
-                print(f"Score: {match.score}")
-                print(f"User ID: {match.metadata.get('user_id')}")
-                print(f"Timestamp: {match.metadata.get('timestamp')}")
         except Exception as e:
             print(f"❌ Erro ao buscar memórias: {str(e)}")
             return []
@@ -131,37 +148,201 @@ class AgentMemory:
         memories = []
         for match in results.matches:
             metadata = match.metadata
-            period = metadata.get('period', "Período desconhecido")
-            user_input = metadata.get('input', 'Input desconhecido')
-            response = metadata.get('response', 'Resposta desconhecida')
+            role = metadata.get('role', 'unknown')
+            content = metadata.get('content', 'Conteúdo desconhecido')
             
-            memory_text = f"""[{period}]
-            Usuário disse: {user_input}
-            {self.character_name} respondeu: {response}"""
+            if role == 'user':
+                memory_text = f"Usuário disse: {content}"
+            else:
+                memory_text = f"{self.character_name} respondeu: {content}"
+                
             memories.append(memory_text)
         
         return memories
     
-    def get_chat_history(self) -> List[Dict]:
+    def get_chat_history(self) -> Dict:
         """Recupera histórico completo da conversa do Pinecone"""
-        results = self.index.query(
-            vector=[0] * 1024,  # vetor dummy para pegar todos
-            top_k=100,  # ajuste conforme necessário
-            namespace=f"{self.user_id}_{self.character_name}",
-            include_metadata=True
-        )
-        
-        messages = []
-        for match in results.matches:
-            metadata = match.metadata
-            messages.extend([
-                {"role": "user", "content": metadata['input']},
-                {"role": "assistant", "content": metadata['response']}
-            ])
-        
-        # Ordenar por timestamp
-        messages.sort(key=lambda x: x.get('timestamp', ''))
-        return messages
+        try:
+            # Primeiro verificar se o chat existe no Pinecone
+            try:
+                check_results = self.index.query(
+                    vector=[0] * 1024,
+                    top_k=1,
+                    namespace=f"{self.user_id}",
+                    filter={
+                        "chat_id": {"$eq": self.chat_id}
+                    },
+                    include_metadata=True
+                )
+                
+                # Se não encontrou nenhum resultado, retornar um objeto vazio sem erro
+                if len(check_results.matches) == 0:
+                    print(f"Chat {self.chat_id} não tem mensagens ainda")
+                    return {
+                        "messages": [],
+                        "character_name": self.character_name,
+                        "historical_period": "",
+                        "historical_factors": "",
+                        "language": "",
+                        "chat_id": self.chat_id
+                    }
+            except Exception as e:
+                print(f"Erro ao verificar existência do chat: {str(e)}")
+                # Continuar mesmo com erro na verificação
+            
+            # Continuar com a busca normal se tiver mensagens
+            results = self.index.query(
+                vector=[0] * 1024,  # vetor dummy para pegar todos
+                top_k=1000,  # ajuste conforme necessário
+                namespace=f"{self.user_id}",
+                filter={
+                    "chat_id": {"$eq": self.chat_id}
+                },
+                include_metadata=True
+            )
+            
+            messages = []
+            chat_metadata = None
+            
+            for match in results.matches:
+                metadata = match.metadata
+                
+                # Guardar metadados do chat para retornar junto
+                if not chat_metadata and 'character' in metadata:
+                    chat_metadata = {
+                        'character_name': metadata.get('character', ''),
+                        'chat_id': self.chat_id,
+                        'historical_period': metadata.get('context', '').split(',')[0].replace('Período: ', '') if metadata.get('context', '') else '',
+                        'historical_factors': metadata.get('context', '').split(',')[1].replace('Fator Histórico: ', '') if metadata.get('context', '') and ',' in metadata.get('context', '') else '',
+                        'language': '' # Não temos essa info no metadata, mas mantemos o campo
+                    }
+                
+                # Adicionar mensagem ao histórico
+                messages.append({
+                    "role": metadata.get('role', 'unknown'),
+                    "content": metadata.get('content', ''),
+                    "timestamp": metadata.get('timestamp', '')
+                })
+            
+            # Ordenar por timestamp
+            messages.sort(key=lambda x: x.get('timestamp', ''))
+            
+            # Retornar no formato que o frontend espera
+            return {
+                "messages": messages,
+                "character_name": chat_metadata['character_name'] if chat_metadata else self.character_name,
+                "historical_period": chat_metadata['historical_period'] if chat_metadata else '',
+                "historical_factors": chat_metadata['historical_factors'] if chat_metadata else '',
+                "language": chat_metadata['language'] if chat_metadata else '',
+                "chat_id": self.chat_id
+            }
+            
+        except Exception as e:
+            print(f"❌ Erro ao recuperar histórico: {str(e)}")
+            return {
+                "messages": [],
+                "character_name": self.character_name,
+                "historical_period": "",
+                "historical_factors": "",
+                "language": "",
+                "chat_id": self.chat_id
+            }
+    
+    def get_user_chats(self) -> List[Dict]:
+        """Recupera lista de todos os chats do usuário"""
+        try:
+            # Buscar todos os vetores do usuário para extrair chats únicos
+            results = self.index.query(
+                vector=[0] * 1024,  # vetor dummy
+                top_k=1000,
+                namespace=f"{self.user_id}",
+                include_metadata=True
+            )
+            
+            # Processar resultados para extrair chats únicos
+            chats = {}
+            for match in results.matches:
+                metadata = match.metadata
+                chat_id = metadata.get('chat_id')
+                
+                if chat_id and chat_id not in chats:
+                    # Extrair informações do contexto
+                    context = metadata.get('context', '')
+                    
+                    # Extrair metadados do chat
+                    chats[chat_id] = {
+                        'chat_id': chat_id,
+                        'character_name': metadata.get('character', ''),
+                        'last_updated': metadata.get('timestamp', ''),
+                        'context': context
+                    }
+                elif chat_id and metadata.get('timestamp', '') > chats[chat_id]['last_updated']:
+                    # Atualizar o timestamp se for mais recente
+                    chats[chat_id]['last_updated'] = metadata.get('timestamp', '')
+            
+            # Converter para lista e ordenar por timestamp (mais recente primeiro)
+            chat_list = list(chats.values())
+            chat_list.sort(key=lambda x: x.get('last_updated', ''), reverse=True)
+            
+            return chat_list
+            
+        except Exception as e:
+            print(f"❌ Erro ao recuperar chats do usuário: {str(e)}")
+            return []
+
+    def delete_chat(self) -> bool:
+        """Deleta todas as mensagens de um chat específico"""
+        try:
+            print(f"\n=== INICIANDO EXCLUSÃO DO CHAT {self.chat_id} PARA USUÁRIO {self.user_id} ===")
+            
+            # Buscar todas as mensagens do chat para pegar seus IDs
+            try:
+                results = self.index.query(
+                    vector=[0] * 1024,
+                    top_k=1000,
+                    namespace=f"{self.user_id}",
+                    filter={
+                        "chat_id": {"$eq": self.chat_id}
+                    },
+                    include_metadata=True
+                )
+                
+                # Extrair IDs dos vetores
+                vector_ids = [match.id for match in results.matches]
+                
+                print(f"Encontrados {len(vector_ids)} vetores para o chat {self.chat_id}")
+                
+                if not vector_ids:
+                    print(f"Nenhum vetor encontrado para chat {self.chat_id}. Considerando exclusão bem-sucedida.")
+                    return True
+                    
+                print(f"Deletando {len(vector_ids)} vetores...")
+                
+                # Deletar vetores em lotes de 100 (limite do Pinecone)
+                for i in range(0, len(vector_ids), 100):
+                    batch = vector_ids[i:i+100]
+                    try:
+                        self.index.delete(
+                            ids=batch,
+                            namespace=f"{self.user_id}"
+                        )
+                        print(f"Lote {i//100 + 1} deletado com sucesso ({len(batch)} vetores)")
+                    except Exception as batch_error:
+                        print(f"Erro ao deletar lote {i//100 + 1}: {str(batch_error)}")
+                        # Continue com os próximos lotes
+                
+                print(f"✅ Chat {self.chat_id} deletado com sucesso!")
+                return True
+                
+            except Exception as query_error:
+                print(f"❌ Erro ao consultar vetores para exclusão: {str(query_error)}")
+                # Se não conseguir consultar, considerar que não há nada para excluir
+                return True
+            
+        except Exception as e:
+            print(f"❌ Erro ao deletar chat: {str(e)}")
+            # Mesmo com erro, retornar True para o frontend poder remover o chat da lista
+            return True
 
 def generate_character_response(
     character: str,

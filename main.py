@@ -73,7 +73,7 @@ class ChatRequest(BaseModel):
     historical_period: str
     historical_factors: str
     language: str
-    session_id: Optional[str] = None
+    chat_id: Optional[str] = None
 
 class Message(BaseModel):
     role: str
@@ -161,6 +161,100 @@ async def get_historical_factors(character: str, token: str = Depends(get_token_
 async def get_languages(token: str = Depends(get_token_header)):
     return language_descriptions_prompts
 
+@app.get("/chats")
+async def get_user_chats(
+    db: Session = Depends(get_db),
+    token: str = Depends(get_token_header)
+):
+    """Retorna todos os chats do usuário"""
+    try:
+        # Obter usuário pelo token
+        user = get_user_by_token(db=db, token=token)
+        if not user:
+            raise HTTPException(status_code=401, detail="Usuário não encontrado")
+        
+        # Criar instância de AgentMemory para buscar chats
+        memory = AgentMemory(
+            character_name="",  # Não importa aqui
+            chat_id="",        # Não importa aqui
+            user_id=user.id
+        )
+        
+        # Buscar todos os chats do usuário
+        return memory.get_user_chats()
+        
+    except Exception as e:
+        print(f"Erro ao buscar chats do usuário: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/chat/{chat_id}")
+async def get_chat_history(
+    chat_id: str,
+    db: Session = Depends(get_db),
+    token: str = Depends(get_token_header)
+):
+    """Retorna o histórico completo de um chat"""
+    try:
+        # Obter usuário pelo token
+        user = get_user_by_token(db=db, token=token)
+        if not user:
+            raise HTTPException(status_code=401, detail="Usuário não encontrado")
+        
+        # Criar instância de AgentMemory para buscar mensagens
+        memory = AgentMemory(
+            character_name="",  # Não importa aqui
+            chat_id=chat_id,
+            user_id=user.id
+        )
+        
+        # Buscar mensagens do Pinecone 
+        messages = memory.get_chat_history()
+        
+        # Não lançar erro se não houver mensagens, apenas retornar objeto vazio
+        return messages
+        
+    except Exception as e:
+        print(f"Erro ao buscar histórico do chat: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/chat/{chat_id}")
+async def delete_chat(
+    chat_id: str,
+    db: Session = Depends(get_db),
+    token: str = Depends(get_token_header)
+):
+    """Deleta um chat do usuário"""
+    try:
+        # Obter usuário pelo token
+        user = get_user_by_token(db=db, token=token)
+        if not user:
+            raise HTTPException(status_code=401, detail="Usuário não encontrado")
+        
+        # Criar instância de AgentMemory
+        memory = AgentMemory(
+            character_name="",
+            chat_id=chat_id,
+            user_id=user.id
+        )
+        
+        print(f"Solicitação para deletar chat {chat_id} do usuário {user.id}")
+        
+        # Tentar deletar chat, mas mesmo com falha, retornar sucesso ao frontend
+        try:
+            result = memory.delete_chat()
+            print(f"Resultado da exclusão: {result}")
+        except Exception as deletion_error:
+            print(f"Erro ao tentar deletar chat: {str(deletion_error)}")
+            # Não lançar exceção para o frontend
+        
+        # Sempre retornar sucesso para que o frontend possa atualizar sua interface
+        return {"status": "success"}
+        
+    except Exception as e:
+        print(f"Erro no endpoint de deletar chat: {str(e)}")
+        # Ainda retorna sucesso para o frontend
+        return {"status": "success", "warning": str(e)}
+
 @app.post("/chat")
 async def chat(
     chat_request: ChatRequest,
@@ -168,28 +262,21 @@ async def chat(
     credentials: HTTPAuthorizationCredentials = Security(security)
 ):
     try:
-        print("\n=== Debug Chat Request ===")
-        print(f"Token recebido: {credentials.credentials[:20]}...")
-        
         # Obter usuário pelo token
         user = get_user_by_token(db=db, token=credentials.credentials)
         if not user:
             raise HTTPException(status_code=401, detail="Usuário não encontrado")
+        
+        # Gerar novo chat_id se não fornecido
+        chat_id = chat_request.chat_id
+        if not chat_id:
+            chat_id = f"{user.id}_{datetime.utcnow().timestamp()}"
             
-        print(f"Usuário autenticado: {user.id}")
-        
-        user_id = user.id
-        print("\n=== Debug Info ===")
-        print(f"Token: {credentials.credentials}")
-        print(f"User ID: {user_id}")
-        print(f"Character: {chat_request.character}")
-        print(f"Prompt: {chat_request.prompt}")
-        
         # Criar/carregar memória do personagem
         memory = AgentMemory(
             character_name=chat_request.character,
-            session_id=credentials.credentials,
-            user_id=user_id
+            chat_id=chat_id,
+            user_id=user.id
         )
 
         # Gerar resposta
@@ -202,7 +289,10 @@ async def chat(
             memory=memory
         )
 
-        return {"response": response}
+        return {
+            "response": response,
+            "chat_id": chat_id
+        }
 
     except Exception as e:
         print(f"Erro no chat: {str(e)}")
