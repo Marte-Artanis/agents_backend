@@ -52,6 +52,51 @@ class AgentMemory:
         )
         self.index = pc.Index("character-memories")
     
+    def create_chat(self, historical_period: str, historical_factor: str, language: str) -> bool:
+        """Cria um novo chat no Pinecone"""
+        try:
+            print("\n=== CRIANDO NOVO CHAT ===")
+            print(f"User ID: {self.user_id}")
+            print(f"Character: {self.character_name}")
+            print(f"Chat ID: {self.chat_id}")
+            
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            context = f"Período: {historical_period}, Fator Histórico: {historical_factor}"
+            
+            # Criar vetor inicial para o chat
+            vector = self.embeddings.embed_query(f"Chat iniciado com {self.character_name}")
+            vector_id = f"{self.user_id}_{self.chat_id}_init"
+            namespace = f"{self.user_id}"
+            
+            metadata = {
+                'timestamp': timestamp,
+                'role': 'system',
+                'content': 'Chat iniciado',
+                'character': self.character_name,
+                'chat_id': self.chat_id,
+                'user_id': self.user_id,
+                'context': context,
+                'historical_period': historical_period,
+                'historical_factors': historical_factor,
+                'language': language
+            }
+            
+            self.index.upsert(
+                vectors=[{
+                    'id': vector_id,
+                    'values': vector,
+                    'metadata': metadata
+                }],
+                namespace=namespace
+            )
+            
+            print("✅ Chat criado com sucesso!")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Erro ao criar chat: {str(e)}")
+            return False
+    
     def add_memory(self, user_input: str, response: str, context: str):
         print("\n=== SALVANDO NO PINECONE ===")
         print(f"User ID: {self.user_id}")

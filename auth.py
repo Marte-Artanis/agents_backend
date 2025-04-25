@@ -4,16 +4,50 @@ from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
 import bcrypt
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
-from fastapi import HTTPException
+from fastapi import HTTPException, Security, Depends
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session as DbSession
 from sqlalchemy import update
 from models import User, Session
 from database import get_db
+from session_manager import SessionManager
 
 # Configurações de JWT
 JWT_SECRET = os.getenv('JWT_SECRET')
 JWT_ALGORITHM = 'HS256'
 TOKEN_EXPIRATION = 24  # horas
+
+# Configurações de segurança
+security = HTTPBearer()
+session_manager = SessionManager()
+
+async def get_token_header(
+    credentials: HTTPAuthorizationCredentials = Security(security),
+    db: Session = Depends(get_db)
+) -> str:
+    """Valida o token de autenticação e retorna o token"""
+    try:
+        if not credentials:
+            raise HTTPException(status_code=401, detail="Token não fornecido")
+            
+        token = credentials.credentials
+        if not token:
+            raise HTTPException(status_code=401, detail="Token não fornecido")
+            
+        # Tenta obter o usuário com o token
+        user = get_user_by_token(db=db, token=token)
+        if not user:
+            raise HTTPException(status_code=401, detail="Token inválido")
+            
+        # Valida/cria a sessão
+        if not session_manager.validate_session(token):
+            session_manager.create_session(user.id, token)
+            
+        return token
+        
+    except Exception as e:
+        print(f"Erro em get_token_header: {str(e)}")
+        raise HTTPException(status_code=401, detail=str(e))
 
 def hash_password(password: str) -> str:
     """Gera o hash da senha"""

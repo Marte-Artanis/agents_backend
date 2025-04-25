@@ -7,10 +7,11 @@ from psycopg2.extras import RealDictCursor
 from psycopg2.extensions import connection, cursor
 from dotenv import load_dotenv
 
-from config import DB_CONFIG
+from config import DB_CONFIG, APP_CONFIG
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.declarative import declarative_base
 
 load_dotenv()
 
@@ -18,19 +19,22 @@ class DatabaseError(Exception):
     """Exceção base para erros do banco de dados"""
     pass
 
-# Configuração do SQLAlchemy
-DATABASE_URL = f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['dbname']}"
+# Criar engine do SQLAlchemy
+engine = create_engine(APP_CONFIG['DATABASE_URL'])
 
-engine = create_engine(DATABASE_URL)
+# Criar sessão
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+# Função para obter sessão do banco de dados
 def get_db():
-    """Dependency para obter uma sessão do banco de dados"""
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
+# Importar Base dos modelos
+from models.database import Base
 
 # Classe para operações com o banco
 class Database:
