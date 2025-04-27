@@ -138,25 +138,55 @@ def register_session(db: DbSession, user_id: int, token: str, expires_at: dateti
     db.commit()
     return session
 
-def login_user(db: DbSession, email: str, password: str) -> dict:
+def login_user(email: str, password: str) -> dict:
     """Autentica um usuário e retorna o token"""
-    user = db.query(User).filter(User.email == email).first()
+    print("\n=== DEBUG LOGIN_USER ===")
+    print(f"Tentando login para email: {email}")
     
-    if not user or not verify_password(password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Credenciais inválidas")
+    # Busca o usuário
+    with db.cursor() as cur:
+        cur.execute("""
+            SELECT id, email, first_name, last_name, password_hash 
+            FROM users 
+            WHERE email = %s
+        """, [email])
+        user = cur.fetchone()
         
-    token, expires_at = create_jwt_token(user.id)
-    register_session(db, user.id, token, expires_at)
+    print(f"Usuário encontrado: {user is not None}")
     
-    return {
+    if not user or not verify_password(password, user['password_hash']):
+        raise HTTPException(status_code=401, detail="Credenciais inválidas")
+    
+    print("Gerando token...")    
+    token, expires_at = create_jwt_token(user['id'])
+    print(f"Token gerado: {token[:20]}...")
+    
+    print("Registrando sessão...")
+    # Desativa sessões antigas
+    with db.cursor() as cur:
+        cur.execute("""
+            UPDATE sessions 
+            SET is_active = false 
+            WHERE user_id = %s
+        """, [user['id']])
+        
+        # Cria nova sessão
+        cur.execute("""
+            INSERT INTO sessions (user_id, token, is_active, expires_at)
+            VALUES (%s, %s, true, %s)
+        """, [user['id'], token, expires_at])
+    
+    response_data = {
         "token": token,
         "user": {
-            "id": user.id,
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-            "email": user.email
+            "id": user['id'],
+            "first_name": user['first_name'],
+            "last_name": user['last_name'],
+            "email": user['email']
         }
     }
+    print(f"Dados de resposta: {response_data}")
+    return response_data
 
 def get_user_by_token(db: DbSession, token: str) -> User:
     """Retorna o usuário associado ao token se válido"""

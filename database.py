@@ -19,8 +19,15 @@ class DatabaseError(Exception):
     """Exceção base para erros do banco de dados"""
     pass
 
-# Criar engine do SQLAlchemy
-engine = create_engine(APP_CONFIG['DATABASE_URL'])
+# Criar engine do SQLAlchemy com as opções corretas
+DATABASE_URL = f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['dbname']}"
+
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={
+        "options": f"-c search_path={APP_CONFIG['DB_SCHEMA']}"
+    }
+)
 
 # Criar sessão
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
