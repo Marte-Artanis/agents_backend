@@ -88,15 +88,18 @@ async def delete_chat(
         # Ainda retorna sucesso para o frontend
         return {"status": "success", "warning": str(e)}
 
-@router.post("/chat")
+@router.post("/")
 async def chat(
     request: ChatRequest,
     user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     try:
-        # Gerar chat_id se não existir
-        chat_id = request.chat_id or str(uuid.uuid4())
+        # Gerar chat_id real se não receber nenhum
+        if not request.chat_id:
+            chat_id = str(uuid.uuid4())
+        else:
+            chat_id = request.chat_id
         
         # Criar instância do AgentMemory
         memory = AgentMemory(
