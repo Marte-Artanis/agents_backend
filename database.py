@@ -58,6 +58,8 @@ class Database:
                 # Define o schema correto após a conexão
                 with self._conn.cursor() as cur:
                     cur.execute(f"SET search_path TO {os.getenv('DB_SCHEMA')}")
+                    # Define timeout de 30 segundos para statements
+                    cur.execute("SET statement_timeout = '30s'")
                 self._conn.commit()
             except psycopg2.Error as e:
                 raise DatabaseError(f"Erro ao conectar ao banco de dados: {e}")

@@ -19,9 +19,9 @@ class UserResponse(BaseModel):
     updated_at: datetime
 
 class UserUpdate(BaseModel):
-    first_name: str
-    last_name: str
-    current_password: str
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    current_password: Optional[str] = None
     new_password: Optional[str] = None
 
 class Token(BaseModel):
